@@ -1,17 +1,16 @@
 {
   "name": "tweetpat",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Multi-column Twitter/Mastodon viewer",
+  "main": "main.js",
   "scripts": {
     "start": "electron main.js"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
-    "electron": "^26.0.0",
-    "split.js": "^1.6.5"
+    "electron": "^41.0.0"
   },
   "devDependencies": {
     "electron-packager": "^17.1.1"

@@ -1,10 +1,4 @@
-const { app, BrowserWindow, BrowserView, shell } = require('electron');  // Include the shell module
-
-const windowConfig = {
-    width: 2560,
-    height: 1600,
-    webPreferences: { nodeIntegration: true }
-};
+const { app, BrowserWindow, WebContentsView, shell, screen } = require('electron');
 
 const sites = [
     'https://twitter.com/notifications',
@@ -21,62 +15,120 @@ const columnConfig = {
     offset: 40,
     buffer: 10,
     extraWidth: 0,
-    scaleFactor: 0.8 // downscale to 80% of original size
+    scaleFactor: 0.8
 };
 
-let mainWindow;  // This is declared outside so we can check if it's already created.
+const viewWebPreferences = {
+    nodeIntegration: false,
+    contextIsolation: true,
+    sandbox: true
+};
+
+let mainWindow;
+let views = [];
+
+function computeLayout(windowWidth, windowHeight, siteCount) {
+    const baseViewWidth = windowWidth / siteCount;
+    const actualViewWidth = baseViewWidth + columnConfig.extraWidth + 100;
+    return Array.from({ length: siteCount }, (_, index) => {
+        const xPosition = (actualViewWidth - columnConfig.extraWidth) * index
+            - columnConfig.offset * index
+            + columnConfig.buffer * index;
+        return {
+            x: Math.round(xPosition),
+            y: 0,
+            width: Math.round(actualViewWidth + columnConfig.offset - columnConfig.buffer),
+            height: windowHeight
+        };
+    });
+}
 
 function createMainView() {
-    if (mainWindow) return;  // If mainWindow already exists, don't create a new one.
+    if (mainWindow) return;
 
-    mainWindow = new BrowserWindow(windowConfig);
-    const baseViewWidth = mainWindow.getBounds().width / sites.length;
-    const actualViewWidth = baseViewWidth + columnConfig.extraWidth + 100;
+    const primaryDisplay = screen.getPrimaryDisplay();
+    const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
+
+    mainWindow = new BrowserWindow({
+        width: Math.round(screenWidth * 0.9),
+        height: Math.round(screenHeight * 0.9),
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true
+        }
+    });
+
     mainWindow.loadFile('index.html');
 
+    const { width: winWidth, height: winHeight } = mainWindow.getBounds();
+    const bounds = computeLayout(winWidth, winHeight, sites.length);
+
     sites.forEach((site, index) => {
-        const view = new BrowserView();
-        mainWindow.addBrowserView(view);
-        
-        const xPosition = (actualViewWidth - columnConfig.extraWidth) * index - columnConfig.offset * index + columnConfig.buffer * index;
-        
-        view.setBounds({
-            x: xPosition,
-            y: 0,
-            width: actualViewWidth + columnConfig.offset - columnConfig.buffer,
-            height: mainWindow.getBounds().height
-        });
-        
+        const view = new WebContentsView({ webPreferences: viewWebPreferences });
+        mainWindow.contentView.addChildView(view);
+
+        view.setBounds(bounds[index]);
         view.webContents.loadURL(site);
 
         view.webContents.on('did-finish-load', () => {
-            if (index !== 0) {
-                view.webContents.executeJavaScript(`
-                    document.body.style.transform = 'translateX(-${columnConfig.offset}px) scale(${columnConfig.scaleFactor})';
-                `);
-            } else {
-                view.webContents.executeJavaScript(`
-                    document.body.style.transform = 'scale(${columnConfig.scaleFactor})';
-                `);
+            const transform = index !== 0
+                ? `translateX(-${columnConfig.offset}px) scale(${columnConfig.scaleFactor})`
+                : `scale(${columnConfig.scaleFactor})`;
+            view.webContents.executeJavaScript(
+                `document.body.style.transform = '${transform}';`
+            );
+        });
+
+        // Only intercept cross-origin navigation; allow in-site clicks (tweets, toots)
+        view.webContents.on('will-navigate', (event, url) => {
+            try {
+                const currentOrigin = new URL(view.webContents.getURL()).origin;
+                const targetOrigin = new URL(url).origin;
+                if (targetOrigin !== currentOrigin) {
+                    event.preventDefault();
+                    shell.openExternal(url);
+                }
+            } catch {
+                // Allow navigation if URL parsing fails
             }
         });
 
-        // Intercept navigation requests and open them in the default system browser
-        view.webContents.on('will-navigate', (event, url) => {
-            event.preventDefault();  // Prevent the default navigation
-            shell.openExternal(url);  // Open the URL in the default system browser
+        // Handle target="_blank" links
+        view.webContents.setWindowOpenHandler(({ url }) => {
+            shell.openExternal(url);
+            return { action: 'deny' };
+        });
+
+        views.push(view);
+    });
+
+    mainWindow.on('resize', () => {
+        const { width, height } = mainWindow.getBounds();
+        const newBounds = computeLayout(width, height, sites.length);
+        views.forEach((view, i) => {
+            view.setBounds(newBounds[i]);
         });
     });
 
-    mainWindow.on('closed', () => mainWindow = null);
+    mainWindow.on('closed', () => {
+        views.forEach(view => {
+            if (!view.webContents.isDestroyed()) {
+                view.webContents.destroy();
+            }
+        });
+        views = [];
+        mainWindow = null;
+    });
 }
 
-app.on('ready', createMainView);
+app.whenReady().then(() => {
+    createMainView();
+    app.on('activate', createMainView);
+});
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         app.quit();
     }
 });
-
-app.on('activate', createMainView);
